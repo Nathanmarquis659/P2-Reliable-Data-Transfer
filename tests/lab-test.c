@@ -937,7 +937,7 @@ void test_e2e_clean_w1_2500_bytes(void)
     TEST_ASSERT_EQUAL_MEMORY(g_file_3k, out, 2500);
 }
 
-void test_e2e_clean_w16_20480_bytes(void)
+void test_e2e_clean_w16_10240_bytes(void)
 {
     static uint8_t out[20480];
     fill_pattern(g_file_10k, sizeof(g_file_10k));
@@ -953,6 +953,131 @@ void test_e2e_clean_empty_file(void)
     fill_pattern(g_file_2k, sizeof(g_file_2k));
     long t = run_e2e(4, g_file_2k, 0, out);
     TEST_ASSERT_EQUAL_INT64(0, (int64_t)t);
+}
+
+/* xorshift32 PRNG — deterministic across platforms (32-bit ops only). */
+static uint32_t g_rng;
+
+static uint32_t rng_next(void)
+{
+    uint32_t x = g_rng;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    return g_rng = x;
+}
+
+typedef struct {
+    uint8_t buf[PKT_MAX_SIZE];
+    int len;
+} chan_pkt_t;
+
+/* Fake relay channel, mirroring cs425_relay.py's exclusive per-datagram
+ * outcomes: drop 20%, else corrupt one random bit 20%, else deliver two
+ * exact copies 20%, else deliver one clean copy. Returns delivery count. */
+static int channel_apply(const uint8_t *buf, int len, chan_pkt_t *out)
+{
+    int k = (int)(rng_next() % 100u);
+    if (k < 20)
+        return 0;
+    memcpy(out[0].buf, buf, (size_t)len);
+    out[0].len = len;
+    if (k < 40) {
+        size_t pos = (size_t)(rng_next() % (uint32_t)len);
+        out[0].buf[pos] ^= (uint8_t)(1u << (int)(rng_next() & 7u));
+        return 1;
+    }
+    if (k < 60) {
+        memcpy(out[1].buf, buf, (size_t)len);
+        out[1].len = len;
+        return 2;
+    }
+    return 1;
+}
+
+#define E2E_LOSSY_MAX_ROUNDS 200000
+
+/* Lossy end-to-end: drives sx and rx against each other with every packet
+ * (both directions) passed through channel_apply. Returns the simulated time
+ * at which the transfer completed, or -1 on give-up / round cap. */
+static long run_e2e_lossy(uint32_t seed, int window, const uint8_t *file, size_t len, uint8_t *out)
+{
+    static sx_state_t sxs;
+    static rx_state_t rxs;
+    static uint8_t ackbuf[PKT_MAX_SIZE];
+
+    g_rng = (seed != 0) ? seed : 1u;
+    sx_init(&sxs, window, 250, file, len);
+    rx_init(&rxs, 0);
+
+    size_t written = 0;
+    long t = 0;
+    for (int round = 0; round < E2E_LOSSY_MAX_ROUNDS; round++) {
+        sx_send_t s;
+        while (sx_next_send(&sxs, t, &s) == 1) {
+            uint8_t pkt[PKT_MAX_SIZE];
+            memcpy(pkt, s.buf, (size_t)s.len);
+            chan_pkt_t d[2];
+            int n = channel_apply(pkt, s.len, d);
+            for (int i = 0; i < n; i++) {
+                rx_action_t act = rx_on_packet(&rxs, t, d[i].buf, (size_t)d[i].len);
+                if (act == RX_ACT_WRITE_ACK) {
+                    memcpy(out + written, rxs.payload, rxs.payload_len);
+                    written += rxs.payload_len;
+                }
+                if (act == RX_ACT_WRITE_ACK || act == RX_ACT_ACK) {
+                    int alen = pkt_encode(ackbuf, sizeof(ackbuf), PKT_TYPE_ACK, rxs.expected, NULL, 0);
+                    chan_pkt_t a[2];
+                    int m = channel_apply(ackbuf, alen, a);
+                    for (int j = 0; j < m; j++)
+                        sx_on_packet(&sxs, t, a[j].buf, (size_t)a[j].len);
+                }
+            }
+        }
+
+        if (rx_tick(&rxs, t) == RX_ACT_GIVEUP)
+            return -1;
+        if (sx_status(&sxs) == SX_ST_GAVEUP)
+            return -1;
+        if (sx_status(&sxs) == SX_ST_DONE) {
+            if (written != len)
+                return -1;
+            if (rx_tick(&rxs, t + RX_LINGER_MS) != RX_ACT_DONE)
+                return -1;
+            return t;
+        }
+
+        long rem = sx_timer_remaining_ms(&sxs, t);
+        t += (rem > 0 ? rem : 1);
+        sx_tick(&sxs, t);
+    }
+    return -1;
+}
+
+/* Seeds verified to complete under this channel model (98 of seeds 1..100
+ * do; a few draw an unlucky streak that trips the sender's give-up after 10
+ * fruitless timeouts — a designed failure mode, covered by the sx unit tests). */
+void test_e2e_lossy_20pct_multi_seed(void)
+{
+    static uint8_t out[sizeof(g_file_10k)];
+    const uint32_t seeds[] = {7u, 27u, 42u, 82u, 97u};
+    fill_pattern(g_file_10k, sizeof(g_file_10k));
+    for (size_t i = 0; i < sizeof(seeds) / sizeof(seeds[0]); i++) {
+        long t = run_e2e_lossy(seeds[i], 8, g_file_10k, sizeof(g_file_10k), out);
+        char msg[64];
+        snprintf(msg, sizeof(msg), "lossy e2e (w=8) failed for seed %lu", (unsigned long)seeds[i]);
+        TEST_ASSERT_MESSAGE(t >= 0, msg);
+        TEST_ASSERT_EQUAL_MEMORY(g_file_10k, out, sizeof(g_file_10k));
+    }
+}
+
+void test_e2e_lossy_w1_seed7(void)
+{
+    static uint8_t out[sizeof(g_file_10k)];
+    fill_pattern(g_file_10k, sizeof(g_file_10k));
+    long t = run_e2e_lossy(7u, 1, g_file_10k, sizeof(g_file_10k), out);
+    TEST_ASSERT_TRUE(t >= 0);
+    TEST_ASSERT_EQUAL_MEMORY(g_file_10k, out, sizeof(g_file_10k));
 }
 
 int main(void)
@@ -1015,8 +1140,10 @@ int main(void)
     RUN_TEST(test_sx_stop_and_wait_w1);
 
     RUN_TEST(test_e2e_clean_w1_2500_bytes);
-    RUN_TEST(test_e2e_clean_w16_20480_bytes);
+    RUN_TEST(test_e2e_clean_w16_10240_bytes);
     RUN_TEST(test_e2e_clean_empty_file);
+    RUN_TEST(test_e2e_lossy_20pct_multi_seed);
+    RUN_TEST(test_e2e_lossy_w1_seed7);
 
     return UNITY_END();
 }

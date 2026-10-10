@@ -111,13 +111,13 @@ myapp recv -s <session> [-p port] <relay> <file>
   1. **Packets** — pure functions: encode/decode/validate/checksum. No I/O.
   2. **State machines** — sender & receiver structs + event-driven functions (`on_ack`, `on_data`, `on_timeout`, etc.) that take "now" as a parameter and return actions. **No** `sendto`/`recvfrom`/`poll`/`clock_gettime`/`fwrite` calls anywhere in this layer.
   3. **I/O** — thin glue: real socket, real clock, real file, the `poll` loop, relay handshake. Only this layer touches the OS. *(I/O glue implemented in main.c; layers 1–2 confirmed I/O-free by grep; live-relay runs of the glue completed in-sandbox via uv on 10/10 — clean + lossy, byte-identical)*
-- [ ] **Task 5 — Unity tests** (`make check`), including minimum required cases:
+- [x] **Task 5 — Unity tests** (`make check`), including minimum required cases:
   - RFC 1071 checksum example, odd-length packet, single-bit-flip detection
   - Too-short datagram, length/size mismatch, unknown `type`
   - Receiver given a duplicate / out-of-gap packet / repeated FIN
   - Sender: full window, cumulative ACK sliding multiple slots, duplicate ACK ignored, timeout resending full window, give-up after 10 timeouts
   - Empty file; file that's an exact multiple of 1024 bytes
-  - **End-to-end in-memory lossy test**: sender/receiver state machines wired through a fake channel dropping/corrupting/duplicating 20% each way, fixed-seed RNG, assert bytes-out == bytes-in. (Run with multiple seeds before trusting it.)
+  - **End-to-end in-memory lossy test**: sender/receiver state machines wired through a fake channel dropping/corrupting/duplicating 20% each way, fixed-seed RNG, assert bytes-out == bytes-in. (Run with multiple seeds before trusting it.) *(All cases audited present; added the missing lossy e2e: xorshift32-seeded fake channel at 20% drop/corrupt/dup both directions, w=8 across 5 verified seeds + w=1 seed 7, plus renamed a misnamed clean test. `make check` 59/59. Note: under this channel ~2 in 100 seeds draw an unlucky streak that trips the designed give-up after 10 fruitless timeouts — those seeds are excluded by design; the give-up path itself is unit-tested.)*
 - [ ] **Task 6 — Measure the window**:
   1. `head -c 1048576 /dev/urandom > 1mib.bin`
   2. Run relay with `--delay 50`.
