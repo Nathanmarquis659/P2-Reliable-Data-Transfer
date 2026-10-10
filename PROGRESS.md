@@ -8,9 +8,10 @@ IN_PROGRESS
 
 ## What's Done So Far
 - Baseline gate passed: `make clean && make all && make check` green on starter code (debug/release/test/debug-test all compile under strict `-Werror=...` flags; starter test passes). (files touched: none)
+- Added `config_t` + `parse_args()` to src/lab.h / src/lab.c. Parser handles mode, all flags, defaults, ranges, session charset, and exactly-two-positionals; returns exit code 0/1. Renamed enum to `app_mode_t` (POSIX `mode_t` collision via `<netdb.h>`). Kept placeholder get_greeting so build stays green. Verified: `make all` clean, zero warnings/errors. (files touched: src/lab.h, src/lab.c)
 
 ## Next Immediate Step
-Add `config_t` struct and `parse_args()` to src/lab.h + src/lab.c (keep placeholder get_greeting for now so the build stays green), then commit.
+Wire src/main.c entry point to call parse_args (print effective config on success, return exit code), then commit.
 
 ## Open Questions / Blockers
 - Relay (`cs425_relay.py`) not downloaded yet — not needed for Task 1; required later for manual integration testing and Task 6 timing.
