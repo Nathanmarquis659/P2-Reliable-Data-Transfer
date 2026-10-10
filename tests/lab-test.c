@@ -5,6 +5,7 @@
 #include "../src/lab.h"
 #include "../src/pkt.h"
 #include "../src/rx.h"
+#include "../src/sx.h"
 
 static void assert_double_near(double expected, double actual)
 {
@@ -477,6 +478,414 @@ void test_rx_worked_example_2500_bytes(void)
     TEST_ASSERT_EQUAL_UINT32(4, st.expected);
 }
 
+static uint8_t g_file_10k[10 * PKT_MAX_PAYLOAD];
+static uint8_t g_file_3k[3 * PKT_MAX_PAYLOAD];
+static uint8_t g_file_2k[2 * PKT_MAX_PAYLOAD];
+
+static void fill_pattern(uint8_t *buf, size_t len)
+{
+    for (size_t i = 0; i < len; i++)
+        buf[i] = (uint8_t)(i % 251u);
+}
+
+void test_sx_init_n_data(void)
+{
+    static sx_state_t st;
+    uint8_t one = 0;
+    uint8_t k1[PKT_MAX_PAYLOAD];
+    uint8_t k1p[PKT_MAX_PAYLOAD + 1];
+
+    sx_init(&st, 8, 250, NULL, 0);
+    TEST_ASSERT_EQUAL_UINT32(0, st.n_data);
+    sx_init(&st, 8, 250, &one, 1);
+    TEST_ASSERT_EQUAL_UINT32(1, st.n_data);
+    sx_init(&st, 8, 250, k1, sizeof(k1));
+    TEST_ASSERT_EQUAL_UINT32(1, st.n_data);
+    sx_init(&st, 8, 250, k1p, sizeof(k1p));
+    TEST_ASSERT_EQUAL_UINT32(2, st.n_data);
+
+    fill_pattern(g_file_2k, sizeof(g_file_2k));
+    sx_init(&st, 8, 250, g_file_2k, sizeof(g_file_2k));
+    TEST_ASSERT_EQUAL_UINT32(2, st.n_data);
+
+    fill_pattern(g_file_10k, sizeof(g_file_10k));
+    sx_init(&st, 4, 250, g_file_10k, sizeof(g_file_10k));
+    TEST_ASSERT_EQUAL_UINT32(10, st.n_data);
+    TEST_ASSERT_EQUAL_UINT32(0, st.base);
+    TEST_ASSERT_EQUAL_UINT32(0, st.next);
+    TEST_ASSERT_FALSE(st.timer_running);
+    TEST_ASSERT_EQUAL_INT(SX_ST_ACTIVE, sx_status(&st));
+    TEST_ASSERT_EQUAL_INT64(0, (int64_t)sx_timer_remaining_ms(&st, 0));
+}
+
+void test_sx_initial_burst_fills_window(void)
+{
+    static sx_state_t st;
+    fill_pattern(g_file_10k, sizeof(g_file_10k));
+    sx_init(&st, 4, 250, g_file_10k, sizeof(g_file_10k));
+
+    sx_send_t s;
+    for (int i = 0; i < 4; i++) {
+        TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 0, &s));
+        pkt_fields_t f;
+        TEST_ASSERT_EQUAL_INT(0, pkt_validate(s.buf, (size_t)s.len, &f));
+        TEST_ASSERT_EQUAL_INT(PKT_TYPE_DATA, f.type);
+        TEST_ASSERT_EQUAL_UINT32((uint32_t)i, f.seq);
+        TEST_ASSERT_EQUAL_UINT16(PKT_MAX_PAYLOAD, f.length);
+    }
+    TEST_ASSERT_EQUAL_INT(0, sx_next_send(&st, 0, &s));
+    TEST_ASSERT_TRUE(st.timer_running);
+    TEST_ASSERT_EQUAL_INT64(250, (int64_t)st.deadline_ms);
+    TEST_ASSERT_EQUAL_INT64(250, (int64_t)sx_timer_remaining_ms(&st, 0));
+    TEST_ASSERT_EQUAL_INT64(100, (int64_t)sx_timer_remaining_ms(&st, 150));
+}
+
+void test_sx_ack_slides_window_and_refills(void)
+{
+    static sx_state_t st;
+    fill_pattern(g_file_10k, sizeof(g_file_10k));
+    sx_init(&st, 4, 250, g_file_10k, sizeof(g_file_10k));
+
+    sx_send_t s;
+    for (int i = 0; i < 4; i++)
+        TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 0, &s));
+
+    int n = make_ack(4);
+    sx_on_packet(&st, 10, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_UINT32(4, st.base);
+    TEST_ASSERT_FALSE(st.timer_running);
+
+    for (uint32_t seq = 4; seq < 8; seq++) {
+        TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 10, &s));
+        pkt_fields_t f;
+        TEST_ASSERT_EQUAL_INT(0, pkt_validate(s.buf, (size_t)s.len, &f));
+        TEST_ASSERT_EQUAL_UINT32(seq, f.seq);
+    }
+    TEST_ASSERT_EQUAL_INT(0, sx_next_send(&st, 10, &s));
+    TEST_ASSERT_TRUE(st.timer_running);
+    TEST_ASSERT_EQUAL_INT64(260, (int64_t)st.deadline_ms);
+
+    n = make_ack(8);
+    sx_on_packet(&st, 20, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_UINT32(8, st.base);
+
+    for (uint32_t seq = 8; seq < 10; seq++) {
+        TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 20, &s));
+        pkt_fields_t f;
+        TEST_ASSERT_EQUAL_INT(0, pkt_validate(s.buf, (size_t)s.len, &f));
+        TEST_ASSERT_EQUAL_UINT32(seq, f.seq);
+    }
+    TEST_ASSERT_EQUAL_INT(0, sx_next_send(&st, 20, &s));
+
+    n = make_ack(10);
+    sx_on_packet(&st, 30, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_UINT32(10, st.base);
+    TEST_ASSERT_FALSE(st.timer_running);
+
+    TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 30, &s));
+    pkt_fields_t ff;
+    TEST_ASSERT_EQUAL_INT(0, pkt_validate(s.buf, (size_t)s.len, &ff));
+    TEST_ASSERT_EQUAL_INT(PKT_TYPE_FIN, ff.type);
+    TEST_ASSERT_EQUAL_UINT32(10, ff.seq);
+    TEST_ASSERT_EQUAL_UINT16(0, ff.length);
+}
+
+void test_sx_duplicate_ack_ignored(void)
+{
+    static sx_state_t st;
+    fill_pattern(g_file_10k, sizeof(g_file_10k));
+    sx_init(&st, 8, 250, g_file_10k, sizeof(g_file_10k));
+
+    sx_send_t s;
+    for (int i = 0; i < 8; i++)
+        TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 0, &s));
+
+    int n = make_ack(4);
+    sx_on_packet(&st, 10, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_UINT32(4, st.base);
+    TEST_ASSERT_TRUE(st.timer_running);
+    TEST_ASSERT_EQUAL_INT64(260, (int64_t)st.deadline_ms);
+
+    n = make_ack(4);
+    sx_on_packet(&st, 50, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_UINT32(4, st.base);
+    TEST_ASSERT_EQUAL_INT64(260, (int64_t)st.deadline_ms);
+
+    n = make_ack(2);
+    sx_on_packet(&st, 60, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_UINT32(4, st.base);
+    TEST_ASSERT_EQUAL_INT64(260, (int64_t)st.deadline_ms);
+}
+
+void test_sx_timeout_resends_full_window(void)
+{
+    static sx_state_t st;
+    fill_pattern(g_file_10k, sizeof(g_file_10k));
+    sx_init(&st, 4, 250, g_file_10k, sizeof(g_file_10k));
+
+    sx_send_t s;
+    for (int i = 0; i < 4; i++)
+        TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 0, &s));
+    TEST_ASSERT_EQUAL_INT(0, sx_next_send(&st, 0, &s));
+
+    sx_tick(&st, 249);
+    TEST_ASSERT_EQUAL_INT(0, sx_next_send(&st, 249, &s));
+
+    sx_tick(&st, 250);
+    TEST_ASSERT_EQUAL_INT64(500, (int64_t)st.deadline_ms);
+    TEST_ASSERT_EQUAL_INT(1, st.stuck_timeouts);
+
+    for (int i = 0; i < 4; i++) {
+        TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 250, &s));
+        pkt_fields_t f;
+        TEST_ASSERT_EQUAL_INT(0, pkt_validate(s.buf, (size_t)s.len, &f));
+        TEST_ASSERT_EQUAL_UINT32((uint32_t)i, f.seq);
+        TEST_ASSERT_EQUAL_MEMORY(g_file_10k + (size_t)i * PKT_MAX_PAYLOAD, s.buf + PKT_HEADER_LEN, PKT_MAX_PAYLOAD);
+    }
+    TEST_ASSERT_EQUAL_INT(0, sx_next_send(&st, 250, &s));
+}
+
+void test_sx_giveup_after_10_timeouts(void)
+{
+    static sx_state_t st;
+    fill_pattern(g_file_10k, sizeof(g_file_10k));
+    sx_init(&st, 4, 250, g_file_10k, sizeof(g_file_10k));
+
+    sx_send_t s;
+    for (int i = 0; i < 4; i++)
+        TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 0, &s));
+
+    for (int i = 1; i <= SX_GIVEUP_TIMEOUTS; i++) {
+        sx_tick(&st, 250L * i);
+        if (i < SX_GIVEUP_TIMEOUTS)
+            TEST_ASSERT_EQUAL_INT(SX_ST_ACTIVE, sx_status(&st));
+    }
+    TEST_ASSERT_EQUAL_INT(SX_ST_GAVEUP, sx_status(&st));
+
+    TEST_ASSERT_EQUAL_INT(0, sx_next_send(&st, 3000, &s));
+    int n = make_ack(4);
+    sx_on_packet(&st, 3100, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_UINT32(0, st.base);
+    sx_tick(&st, 5000);
+    TEST_ASSERT_EQUAL_INT(SX_ST_GAVEUP, sx_status(&st));
+}
+
+void test_sx_giveup_streak_resets_on_progress(void)
+{
+    static sx_state_t st;
+    fill_pattern(g_file_10k, sizeof(g_file_10k));
+    sx_init(&st, 4, 250, g_file_10k, sizeof(g_file_10k));
+
+    sx_send_t s;
+    for (int i = 0; i < 4; i++)
+        TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 0, &s));
+
+    sx_tick(&st, 250);
+    sx_tick(&st, 500);
+    sx_tick(&st, 750);
+    TEST_ASSERT_EQUAL_INT(3, st.stuck_timeouts);
+    TEST_ASSERT_EQUAL_INT(SX_ST_ACTIVE, sx_status(&st));
+    for (int i = 0; i < 4; i++)
+        TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 750, &s));
+    TEST_ASSERT_EQUAL_INT(0, sx_next_send(&st, 750, &s));
+
+    int n = make_ack(4);
+    sx_on_packet(&st, 800, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_UINT32(4, st.base);
+    TEST_ASSERT_FALSE(st.timer_running);
+
+    for (uint32_t seq = 4; seq < 8; seq++)
+        TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 800, &s));
+    TEST_ASSERT_TRUE(st.timer_running);
+    TEST_ASSERT_EQUAL_INT64(1050, (int64_t)st.deadline_ms);
+
+    for (int i = 0; i < SX_GIVEUP_TIMEOUTS - 1; i++) {
+        sx_tick(&st, 1050L + 250L * i);
+        TEST_ASSERT_EQUAL_INT(SX_ST_ACTIVE, sx_status(&st));
+    }
+    sx_tick(&st, 1050L + 250L * (SX_GIVEUP_TIMEOUTS - 1));
+    TEST_ASSERT_EQUAL_INT(SX_ST_GAVEUP, sx_status(&st));
+}
+
+void test_sx_fin_flow_single_chunk(void)
+{
+    static sx_state_t st;
+    uint8_t f[5] = {1, 2, 3, 4, 5};
+    sx_init(&st, 8, 250, f, sizeof(f));
+    TEST_ASSERT_EQUAL_UINT32(1, st.n_data);
+
+    sx_send_t s;
+    TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 0, &s));
+    pkt_fields_t d;
+    TEST_ASSERT_EQUAL_INT(0, pkt_validate(s.buf, (size_t)s.len, &d));
+    TEST_ASSERT_EQUAL_INT(PKT_TYPE_DATA, d.type);
+    TEST_ASSERT_EQUAL_UINT32(0, d.seq);
+    TEST_ASSERT_EQUAL_UINT16(5, d.length);
+    TEST_ASSERT_EQUAL_MEMORY(f, s.buf + PKT_HEADER_LEN, 5);
+    TEST_ASSERT_EQUAL_INT(0, sx_next_send(&st, 0, &s));
+
+    int n = make_ack(1);
+    sx_on_packet(&st, 5, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_UINT32(1, st.base);
+    TEST_ASSERT_FALSE(st.timer_running);
+    TEST_ASSERT_EQUAL_INT64(0, (int64_t)sx_timer_remaining_ms(&st, 5));
+
+    TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 5, &s));
+    pkt_fields_t fp;
+    TEST_ASSERT_EQUAL_INT(0, pkt_validate(s.buf, (size_t)s.len, &fp));
+    TEST_ASSERT_EQUAL_INT(PKT_TYPE_FIN, fp.type);
+    TEST_ASSERT_EQUAL_UINT32(1, fp.seq);
+    TEST_ASSERT_TRUE(st.timer_running);
+    TEST_ASSERT_EQUAL_INT64(255, (int64_t)st.deadline_ms);
+
+    n = make_ack(2);
+    sx_on_packet(&st, 30, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_INT(SX_ST_DONE, sx_status(&st));
+    TEST_ASSERT_EQUAL_INT(0, sx_next_send(&st, 30, &s));
+
+    n = make_ack(2);
+    sx_on_packet(&st, 40, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_INT(SX_ST_DONE, sx_status(&st));
+}
+
+void test_sx_empty_file_fin_seq_zero(void)
+{
+    static sx_state_t st;
+    uint8_t dummy = 0;
+    sx_init(&st, 8, 250, &dummy, 0);
+
+    sx_send_t s;
+    TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 0, &s));
+    pkt_fields_t f;
+    TEST_ASSERT_EQUAL_INT(0, pkt_validate(s.buf, (size_t)s.len, &f));
+    TEST_ASSERT_EQUAL_INT(PKT_TYPE_FIN, f.type);
+    TEST_ASSERT_EQUAL_UINT32(0, f.seq);
+    TEST_ASSERT_EQUAL_UINT16(0, f.length);
+
+    int n = make_ack(1);
+    sx_on_packet(&st, 7, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_INT(SX_ST_DONE, sx_status(&st));
+}
+
+void test_sx_fin_retransmit_on_timeout(void)
+{
+    static sx_state_t st;
+    uint8_t f[5] = {9, 8, 7, 6, 5};
+    sx_init(&st, 8, 250, f, sizeof(f));
+
+    sx_send_t s;
+    TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 0, &s));
+    int n = make_ack(1);
+    sx_on_packet(&st, 5, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 5, &s));
+    TEST_ASSERT_TRUE(st.timer_running);
+
+    sx_tick(&st, 260);
+    TEST_ASSERT_EQUAL_INT(SX_ST_ACTIVE, sx_status(&st));
+
+    TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 260, &s));
+    pkt_fields_t fp;
+    TEST_ASSERT_EQUAL_INT(0, pkt_validate(s.buf, (size_t)s.len, &fp));
+    TEST_ASSERT_EQUAL_INT(PKT_TYPE_FIN, fp.type);
+    TEST_ASSERT_EQUAL_UINT32(1, fp.seq);
+    TEST_ASSERT_EQUAL_INT(0, sx_next_send(&st, 260, &s));
+
+    sx_tick(&st, 510);
+    TEST_ASSERT_EQUAL_INT(SX_ST_ACTIVE, sx_status(&st));
+}
+
+void test_sx_foreign_and_invalid_packets_ignored(void)
+{
+    static sx_state_t st;
+    fill_pattern(g_file_10k, sizeof(g_file_10k));
+    sx_init(&st, 4, 250, g_file_10k, sizeof(g_file_10k));
+
+    uint8_t garbage[5] = {9, 8, 7, 6, 5};
+    sx_on_packet(&st, 0, garbage, sizeof(garbage));
+    uint8_t p[] = {'x', 'y'};
+    make_data(7, p, 2);
+    sx_on_packet(&st, 0, g_pkt, 12);
+    make_fin(3);
+    sx_on_packet(&st, 0, g_pkt, 10);
+
+    TEST_ASSERT_EQUAL_UINT32(0, st.base);
+    TEST_ASSERT_EQUAL_UINT32(0, st.next);
+    TEST_ASSERT_FALSE(st.timer_running);
+    TEST_ASSERT_EQUAL_INT(SX_ST_ACTIVE, sx_status(&st));
+
+    sx_send_t s;
+    TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 0, &s));
+    pkt_fields_t f;
+    TEST_ASSERT_EQUAL_INT(0, pkt_validate(s.buf, (size_t)s.len, &f));
+    TEST_ASSERT_EQUAL_UINT32(0, f.seq);
+}
+
+void test_sx_ack_above_n_data_clamped(void)
+{
+    static sx_state_t st;
+    fill_pattern(g_file_2k, sizeof(g_file_2k));
+    sx_init(&st, 8, 250, g_file_2k, sizeof(g_file_2k));
+
+    sx_send_t s;
+    for (int i = 0; i < 2; i++)
+        TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 0, &s));
+    TEST_ASSERT_EQUAL_INT(0, sx_next_send(&st, 0, &s));
+
+    int n = make_ack(7);
+    sx_on_packet(&st, 5, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_UINT32(2, st.base);
+    TEST_ASSERT_FALSE(st.timer_running);
+
+    TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 5, &s));
+    pkt_fields_t f;
+    TEST_ASSERT_EQUAL_INT(0, pkt_validate(s.buf, (size_t)s.len, &f));
+    TEST_ASSERT_EQUAL_INT(PKT_TYPE_FIN, f.type);
+    TEST_ASSERT_EQUAL_UINT32(2, f.seq);
+
+    n = make_ack(3);
+    sx_on_packet(&st, 9, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_INT(SX_ST_DONE, sx_status(&st));
+}
+
+void test_sx_stop_and_wait_w1(void)
+{
+    static sx_state_t st;
+    fill_pattern(g_file_3k, sizeof(g_file_3k));
+    sx_init(&st, 1, 250, g_file_3k, sizeof(g_file_3k));
+
+    sx_send_t s;
+    TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 0, &s));
+    pkt_fields_t f;
+    TEST_ASSERT_EQUAL_INT(0, pkt_validate(s.buf, (size_t)s.len, &f));
+    TEST_ASSERT_EQUAL_UINT32(0, f.seq);
+    TEST_ASSERT_EQUAL_INT(0, sx_next_send(&st, 0, &s));
+
+    int n = make_ack(1);
+    sx_on_packet(&st, 5, g_pkt, (size_t)n);
+    TEST_ASSERT_FALSE(st.timer_running);
+    TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 5, &s));
+    TEST_ASSERT_EQUAL_UINT32(2, st.next);
+
+    n = make_ack(2);
+    sx_on_packet(&st, 10, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 10, &s));
+    pkt_fields_t f2;
+    TEST_ASSERT_EQUAL_INT(0, pkt_validate(s.buf, (size_t)s.len, &f2));
+    TEST_ASSERT_EQUAL_UINT32(2, f2.seq);
+
+    n = make_ack(3);
+    sx_on_packet(&st, 15, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_INT(1, sx_next_send(&st, 15, &s));
+    pkt_fields_t f3;
+    TEST_ASSERT_EQUAL_INT(0, pkt_validate(s.buf, (size_t)s.len, &f3));
+    TEST_ASSERT_EQUAL_INT(PKT_TYPE_FIN, f3.type);
+    TEST_ASSERT_EQUAL_UINT32(3, f3.seq);
+
+    n = make_ack(4);
+    sx_on_packet(&st, 20, g_pkt, (size_t)n);
+    TEST_ASSERT_EQUAL_INT(SX_ST_DONE, sx_status(&st));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -521,5 +930,20 @@ int main(void)
     RUN_TEST(test_rx_linger_ignores_data);
     RUN_TEST(test_rx_duplicate_fin_acks_linger_unchanged);
     RUN_TEST(test_rx_worked_example_2500_bytes);
+
+    RUN_TEST(test_sx_init_n_data);
+    RUN_TEST(test_sx_initial_burst_fills_window);
+    RUN_TEST(test_sx_ack_slides_window_and_refills);
+    RUN_TEST(test_sx_duplicate_ack_ignored);
+    RUN_TEST(test_sx_timeout_resends_full_window);
+    RUN_TEST(test_sx_giveup_after_10_timeouts);
+    RUN_TEST(test_sx_giveup_streak_resets_on_progress);
+    RUN_TEST(test_sx_fin_flow_single_chunk);
+    RUN_TEST(test_sx_empty_file_fin_seq_zero);
+    RUN_TEST(test_sx_fin_retransmit_on_timeout);
+    RUN_TEST(test_sx_foreign_and_invalid_packets_ignored);
+    RUN_TEST(test_sx_ack_above_n_data_clamped);
+    RUN_TEST(test_sx_stop_and_wait_w1);
+
     return UNITY_END();
 }
