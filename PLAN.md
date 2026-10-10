@@ -106,7 +106,7 @@ myapp recv -s <session> [-p port] <relay> <file>
 
 - [x] **Task 1 — CLI**: Implement argument parsing exactly as specified above; verify both modes, all flags, defaults, and exit codes.
 - [ ] **Task 2 — Receiver**: Implement the `expected`-counter state machine (§2.5). Test manually with the relay on a clean channel first.
-- [ ] **Task 3 — Sender**: Implement the `base`/`next`/timer state machine (§2.4). Verify stop-and-wait (`-w 1`) and GBN (`-w 16`) both behave correctly.
+- [x] **Task 3 — Sender**: Implement the `base`/`next`/timer state machine (§2.4). Verify stop-and-wait (`-w 1`) and GBN (`-w 16`) both behave correctly. *(verified at unit level incl. in-memory e2e at w=1/w=16; live relay runs happen during Task 4 integration)*
 - [ ] **Task 4 — Testable design (critical, explicitly graded)**: Split `src/lab.h` into exactly three layers:
   1. **Packets** — pure functions: encode/decode/validate/checksum. No I/O.
   2. **State machines** — sender & receiver structs + event-driven functions (`on_ack`, `on_data`, `on_timeout`, etc.) that take "now" as a parameter and return actions. **No** `sendto`/`recvfrom`/`poll`/`clock_gettime`/`fwrite` calls anywhere in this layer.
@@ -175,5 +175,5 @@ myapp recv -s <session> [-p port] <relay> <file>
 
 ## Backlog (agent observations — human triages)
 
-- Task 2 manual clean-channel relay test deferred: it needs the I/O glue (Task 4 layer 3) + sender (Task 3). The receiver state machine and packet layer are done and unit-tested (see PROGRESS.md); Task 2 stays unchecked until the manual test runs.
+- Task 2 manual clean-channel relay test deferred: it needs the I/O glue (Task 4 layer 3). Packet layer, receiver, and sender state machines are all done and unit-tested (see PROGRESS.md); Task 2 stays unchecked until the manual live-relay test runs.
 - Design note: ACKs arriving at the receiver are ignored (spec defines no use for them); locked in by `test_rx_ack_at_receiver_ignored`.
