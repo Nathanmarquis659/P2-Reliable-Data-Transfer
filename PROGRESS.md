@@ -1,23 +1,22 @@
 # PROGRESS.md
 
 ## Current Task
-Task 1 — CLI: Implement argument parsing exactly as specified above; verify both modes, all flags, defaults, and exit codes.
+Task 2 — Receiver: Implement the `expected`-counter state machine (§2.5). Test manually with the relay on a clean channel first.
 
 ## State
-READY_FOR_REVIEW
+IN_PROGRESS
 
 ## What's Done So Far
-- Baseline gate passed: `make clean && make all && make check` green on starter code (debug/release/test/debug-test all compile under strict `-Werror=...` flags; starter test passes). (files touched: none)
-- Added `config_t` + `parse_args()` to src/lab.h / src/lab.c. Parser handles mode, all flags, defaults, ranges, session charset, and exactly-two-positionals; returns exit code 0/1. Renamed enum to `app_mode_t` (POSIX `mode_t` collision via `<netdb.h>`). Kept placeholder get_greeting so build stays green. Verified: `make all` clean, zero warnings/errors. (files touched: src/lab.h, src/lab.c)
-- Wired src/main.c to call parse_args; prints effective config on success, returns exit code. Smoke-tested exit-code matrix (no-args→0, valid send/recv→0, bad mode / out-of-range -w / rate>0.5 / missing-or-extra positional / send-flag-on-recv / bad session charset →1). Also committed cs425_relay.py (valid 383-line Python) for later tasks. (files touched: src/main.c, cs425_relay.py)
-- Replaced tests/lab-test.c placeholder with 18 CLI parser unit tests (no-args, valid send/recv field checks, bad mode, -w bounds/nonnumeric, rate bounds, port bound, missing/extra positional, send-flag-on-recv, session length/charset, missing -s). Removed get_greeting from lab.h/lab.c. Added `-s` required check to parse_args (spec shows it unbracketed = mandatory). Double comparison via local `assert_double_near` helper (Unity's double asserts need UNITY_INCLUDE_DOUBLE at unity.c compile time, which the Makefile doesn't set). Verified: `make all` clean (test bin builds), `make check` 18/18 PASS, `make leak` exit 0 (ASan debug build), runtime exit-code matrix correct. (files touched: tests/lab-test.c, src/lab.c, src/lab.h)
+- **Task 1 — CLI is DONE** (commits 52705b9 → 348174a): `config_t` + `parse_args()` in src/lab.{h,c}, main.c wiring, 18 parser unit tests, `-s` required. Verified: `make all` clean, `make check` 18/18 PASS, `make leak` exit 0; working tree clean. (files touched: src/lab.h, src/lab.c, src/main.c, tests/lab-test.c)
+- Task 2 — packet layer added (src/pkt.{h,c}): RFC 1071 checksum, manual byte-order encode, ordered validate per §2.3 (length checked vs actual size before payload is touched); 12 unit tests incl. §2.6 wire-byte fixture (`"Hi!"` seq=2) and RFC 1071 example. Verified: `make all` clean, `make check` 30/30 PASS, `make leak` exit 0. (files touched: src/pkt.h, src/pkt.c, tests/lab-test.c)
 
 ## Next Immediate Step
-Task 1 complete (commit f73461f); awaiting human review/triage. When greenlit, top unchecked PLAN.md item is **Task 2 — Receiver** (§2.5 `expected`-counter state machine; test manually on a clean relay channel first). Note: §7 execution order suggests building the packet layer (Task 4 layer 1) before sender/receiver — confirm desired ordering with human before starting.
+Add the receiver state machine (src/rx.{h,c}) per §2.5 — pure struct, takes now_ms, returns actions (NONE/ACK/WRITE_ACK/DONE/GIVEUP), 2 s FIN linger, 30 s idle give-up — plus ~11 Unity tests incl. the 2500-byte worked example; verify and commit.
 
 ## Open Questions / Blockers
-- Relay (`cs425_relay.py`) not downloaded yet — not needed for Task 1; required later for manual integration testing and Task 6 timing.
-- Onyx half of §1 environment gate is a user action (this sandbox covers the local build only).
+- Task 2 manual clean-channel relay test deferred until I/O glue (Task 4 layer 3) + sender (Task 3) exist; consistent with §7 ordering.
+- `cs425_relay.py` is present (committed) but not yet used — needed for that manual test + Task 6 timing.
+- Onyx half of §1 environment gate is a user action (sandbox covers local build only).
 
 ## Last Known-Good State
-Task 1 CLI complete: `make all` clean, `make check` 18/18 PASS, `make leak` exit 0. Working tree has uncommitted parser-test changes (src/lab.c, src/lab.h, tests/lab-test.c) + PROGRESS.md pending final commit.
+Packet layer committed: `make all` clean, `make check` 30/30 PASS, `make leak` exit 0; working tree clean.
