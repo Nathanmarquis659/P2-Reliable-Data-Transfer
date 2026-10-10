@@ -172,3 +172,8 @@ myapp recv -s <session> [-p port] <relay> <file>
 6. Run Task 6 timing experiments once correctness is solid; write the Results section.
 7. Drive coverage to 100% (Task 7), then fix leaks/crashes (Task 8).
 8. Finalize README (Task 9), push, confirm CI, generate and submit the report (Task 10).
+
+## Backlog (agent observations — human triages)
+
+- Task 2 manual clean-channel relay test deferred: it needs the I/O glue (Task 4 layer 3) + sender (Task 3). The receiver state machine and packet layer are done and unit-tested (see PROGRESS.md); Task 2 stays unchecked until the manual test runs.
+- Design note: ACKs arriving at the receiver are ignored (spec defines no use for them); locked in by `test_rx_ack_at_receiver_ignored`.

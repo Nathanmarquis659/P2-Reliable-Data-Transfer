@@ -4,6 +4,7 @@
 #include "harness/unity.h"
 #include "../src/lab.h"
 #include "../src/pkt.h"
+#include "../src/rx.h"
 
 static void assert_double_near(double expected, double actual)
 {
@@ -192,6 +193,16 @@ static int make_raw(int type, uint8_t reserved, uint32_t seq)
     return PKT_HEADER_LEN;
 }
 
+static int make_ack(uint32_t seq)
+{
+    return pkt_encode(g_pkt, sizeof(g_pkt), PKT_TYPE_ACK, seq, NULL, 0);
+}
+
+static int make_fin(uint32_t seq)
+{
+    return pkt_encode(g_pkt, sizeof(g_pkt), PKT_TYPE_FIN, seq, NULL, 0);
+}
+
 void test_checksum_rfc1071_example(void)
 {
     uint8_t d[] = {0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7};
@@ -306,6 +317,166 @@ void test_validate_rejects_bit_flip_header(void)
     TEST_ASSERT_EQUAL_INT(-1, pkt_validate(g_pkt, (size_t)n, &f));
 }
 
+void test_rx_init_state(void)
+{
+    rx_state_t st;
+    rx_init(&st, 123);
+    TEST_ASSERT_EQUAL_UINT32(0, st.expected);
+    TEST_ASSERT_FALSE(st.finished);
+    TEST_ASSERT_NULL(st.payload);
+    TEST_ASSERT_EQUAL_INT64(123, (int64_t)st.last_valid_ms);
+}
+
+void test_rx_in_order_data_then_fin_worked_example(void)
+{
+    rx_state_t st;
+    rx_init(&st, 0);
+
+    uint8_t p1[] = {'a', 'b'};
+    TEST_ASSERT_EQUAL_INT(12, make_data(0, p1, 2));
+    TEST_ASSERT_EQUAL(RX_ACT_WRITE_ACK, rx_on_packet(&st, 0, g_pkt, 12));
+    TEST_ASSERT_EQUAL_UINT32(1, st.expected);
+    TEST_ASSERT_EQUAL_MEMORY(p1, st.payload, 2);
+
+    uint8_t p2[] = {'c'};
+    TEST_ASSERT_EQUAL_INT(11, make_data(1, p2, 1));
+    TEST_ASSERT_EQUAL(RX_ACT_WRITE_ACK, rx_on_packet(&st, 0, g_pkt, 11));
+    TEST_ASSERT_EQUAL_UINT32(2, st.expected);
+
+    TEST_ASSERT_EQUAL_INT(10, make_fin(2));
+    TEST_ASSERT_EQUAL(RX_ACT_ACK, rx_on_packet(&st, 5, g_pkt, 10));
+    TEST_ASSERT_TRUE(st.finished);
+    TEST_ASSERT_EQUAL_UINT32(3, st.expected);
+    TEST_ASSERT_EQUAL_INT64(2005, (int64_t)st.linger_until_ms);
+
+    TEST_ASSERT_EQUAL(RX_ACT_NONE, rx_tick(&st, 1999));
+    TEST_ASSERT_EQUAL(RX_ACT_DONE, rx_tick(&st, 2005));
+}
+
+void test_rx_duplicate_and_out_of_order_reack(void)
+{
+    rx_state_t st;
+    rx_init(&st, 0);
+
+    uint8_t p[] = {'x', 'y'};
+    make_data(1, p, 2);
+    TEST_ASSERT_EQUAL(RX_ACT_ACK, rx_on_packet(&st, 0, g_pkt, 12));
+    TEST_ASSERT_EQUAL_UINT32(0, st.expected);
+
+    make_data(0, p, 2);
+    TEST_ASSERT_EQUAL(RX_ACT_WRITE_ACK, rx_on_packet(&st, 0, g_pkt, 12));
+    TEST_ASSERT_EQUAL_UINT32(1, st.expected);
+
+    make_data(0, p, 2);
+    TEST_ASSERT_EQUAL(RX_ACT_ACK, rx_on_packet(&st, 0, g_pkt, 12));
+    TEST_ASSERT_EQUAL_UINT32(1, st.expected);
+}
+
+void test_rx_invalid_datagram_ignored(void)
+{
+    rx_state_t st;
+    rx_init(&st, 0);
+    uint8_t d[5] = {1, 2, 3, 4, 5};
+    TEST_ASSERT_EQUAL(RX_ACT_NONE, rx_on_packet(&st, 100, d, sizeof(d)));
+    TEST_ASSERT_EQUAL_INT(0, st.last_valid_ms);
+}
+
+void test_rx_ack_at_receiver_ignored(void)
+{
+    rx_state_t st;
+    rx_init(&st, 0);
+    TEST_ASSERT_EQUAL_INT(10, make_ack(0));
+    TEST_ASSERT_EQUAL(RX_ACT_NONE, rx_on_packet(&st, 7, g_pkt, 10));
+    TEST_ASSERT_EQUAL_UINT32(0, st.expected);
+}
+
+void test_rx_fin_wrong_seq_reacked(void)
+{
+    rx_state_t st;
+    rx_init(&st, 0);
+    uint8_t p[] = {'a'};
+    make_data(0, p, 1);
+    TEST_ASSERT_EQUAL(RX_ACT_WRITE_ACK, rx_on_packet(&st, 0, g_pkt, 11));
+
+    TEST_ASSERT_EQUAL_INT(10, make_fin(5));
+    TEST_ASSERT_EQUAL(RX_ACT_ACK, rx_on_packet(&st, 0, g_pkt, 10));
+    TEST_ASSERT_FALSE(st.finished);
+    TEST_ASSERT_EQUAL_UINT32(1, st.expected);
+}
+
+void test_rx_after_finished_valid_packets_ack_only(void)
+{
+    rx_state_t st;
+    rx_init(&st, 0);
+    TEST_ASSERT_EQUAL_INT(10, make_fin(0));
+    TEST_ASSERT_EQUAL(RX_ACT_ACK, rx_on_packet(&st, 0, g_pkt, 10));
+
+    uint8_t p[] = {'z'};
+    make_data(99, p, 1);
+    TEST_ASSERT_EQUAL(RX_ACT_ACK, rx_on_packet(&st, 10, g_pkt, 11));
+    TEST_ASSERT_TRUE(st.finished);
+}
+
+void test_rx_idle_giveup_and_reset(void)
+{
+    rx_state_t st;
+    rx_init(&st, 0);
+    TEST_ASSERT_EQUAL(RX_ACT_NONE, rx_tick(&st, 29999));
+    TEST_ASSERT_EQUAL(RX_ACT_GIVEUP, rx_tick(&st, 30000));
+
+    uint8_t p[] = {'q'};
+    make_data(0, p, 1);
+    TEST_ASSERT_EQUAL(RX_ACT_WRITE_ACK, rx_on_packet(&st, 30000, g_pkt, 11));
+    TEST_ASSERT_EQUAL(RX_ACT_NONE, rx_tick(&st, 59999));
+}
+
+void test_rx_linger_ignores_data(void)
+{
+    rx_state_t st;
+    rx_init(&st, 0);
+    TEST_ASSERT_EQUAL_INT(10, make_fin(0));
+    TEST_ASSERT_EQUAL(RX_ACT_ACK, rx_on_packet(&st, 0, g_pkt, 10));
+
+    uint8_t p[] = {'w'};
+    make_data(0, p, 1);
+    TEST_ASSERT_EQUAL(RX_ACT_ACK, rx_on_packet(&st, 100, g_pkt, 11));
+    TEST_ASSERT_TRUE(st.finished);
+    TEST_ASSERT_EQUAL_INT64(2000, (int64_t)st.linger_until_ms);
+
+    TEST_ASSERT_EQUAL(RX_ACT_DONE, rx_tick(&st, 2000));
+}
+
+void test_rx_duplicate_fin_acks_linger_unchanged(void)
+{
+    rx_state_t st;
+    rx_init(&st, 0);
+    TEST_ASSERT_EQUAL_INT(10, make_fin(0));
+    TEST_ASSERT_EQUAL(RX_ACT_ACK, rx_on_packet(&st, 0, g_pkt, 10));
+    TEST_ASSERT_EQUAL_INT64(2000, (int64_t)st.linger_until_ms);
+
+    TEST_ASSERT_EQUAL(RX_ACT_ACK, rx_on_packet(&st, 500, g_pkt, make_fin(0)));
+    TEST_ASSERT_EQUAL_INT64(2000, (int64_t)st.linger_until_ms);
+}
+
+void test_rx_worked_example_2500_bytes(void)
+{
+    rx_state_t st;
+    rx_init(&st, 0);
+
+    static uint8_t full[1024];
+    static uint8_t tail[452];
+    memset(full, 0x42, sizeof(full));
+    memset(tail, 0x42, sizeof(tail));
+
+    TEST_ASSERT_EQUAL(RX_ACT_WRITE_ACK, rx_on_packet(&st, 0, g_pkt, make_data(0, full, 1024)));
+    TEST_ASSERT_EQUAL(RX_ACT_WRITE_ACK, rx_on_packet(&st, 0, g_pkt, make_data(1, full, 1024)));
+    TEST_ASSERT_EQUAL(RX_ACT_WRITE_ACK, rx_on_packet(&st, 0, g_pkt, make_data(2, tail, 452)));
+
+    TEST_ASSERT_EQUAL(RX_ACT_ACK, rx_on_packet(&st, 0, g_pkt, make_fin(3)));
+    TEST_ASSERT_TRUE(st.finished);
+    TEST_ASSERT_EQUAL_UINT32(4, st.expected);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -339,5 +510,16 @@ int main(void)
     RUN_TEST(test_validate_rejects_reserved);
     RUN_TEST(test_validate_rejects_bit_flip_payload);
     RUN_TEST(test_validate_rejects_bit_flip_header);
+    RUN_TEST(test_rx_init_state);
+    RUN_TEST(test_rx_in_order_data_then_fin_worked_example);
+    RUN_TEST(test_rx_duplicate_and_out_of_order_reack);
+    RUN_TEST(test_rx_invalid_datagram_ignored);
+    RUN_TEST(test_rx_ack_at_receiver_ignored);
+    RUN_TEST(test_rx_fin_wrong_seq_reacked);
+    RUN_TEST(test_rx_after_finished_valid_packets_ack_only);
+    RUN_TEST(test_rx_idle_giveup_and_reset);
+    RUN_TEST(test_rx_linger_ignores_data);
+    RUN_TEST(test_rx_duplicate_fin_acks_linger_unchanged);
+    RUN_TEST(test_rx_worked_example_2500_bytes);
     return UNITY_END();
 }
