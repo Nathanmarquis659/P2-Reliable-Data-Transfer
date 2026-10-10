@@ -7,6 +7,9 @@
 #include "../src/rx.h"
 #include "../src/sx.h"
 
+int lab_test_parse_int(const char *s, int lo, int hi, int *out);
+int lab_test_parse_double(const char *s, double lo, double hi, double *out);
+
 static void assert_double_near(double expected, double actual)
 {
     double d = expected - actual;
@@ -168,6 +171,67 @@ void test_missing_session_rejected(void)
     config_t c;
     char *a[] = {"myapp", "send", "relay", "file"};
     TEST_ASSERT_EQUAL_INT(1, parse_args(4, a, &c));
+}
+
+void test_window_flag_without_value_rejected(void)
+{
+    config_t c;
+    char *a[] = {"myapp", "send", "-s", "abc", "-w"};
+    TEST_ASSERT_EQUAL_INT(1, parse_args(5, a, &c));
+}
+
+void test_loss_flag_without_value_rejected(void)
+{
+    config_t c;
+    char *a[] = {"myapp", "send", "-s", "abc", "-l"};
+    TEST_ASSERT_EQUAL_INT(1, parse_args(5, a, &c));
+}
+
+void test_corrupt_nonnumeric_rejected(void)
+{
+    config_t c;
+    char *a[] = {"myapp", "send", "-s", "abc", "-c", "xyz", "r", "f"};
+    TEST_ASSERT_EQUAL_INT(1, parse_args(8, a, &c));
+}
+
+void test_timeout_nonnumeric_rejected(void)
+{
+    config_t c;
+    char *a[] = {"myapp", "send", "-s", "abc", "-T", "abc", "r", "f"};
+    TEST_ASSERT_EQUAL_INT(1, parse_args(8, a, &c));
+}
+
+void test_corrupt_flag_on_recv_rejected(void)
+{
+    config_t c;
+    char *a[] = {"myapp", "recv", "-s", "abc", "-c", "0.1", "r", "f"};
+    TEST_ASSERT_EQUAL_INT(1, parse_args(8, a, &c));
+}
+
+void test_dup_flag_on_recv_rejected(void)
+{
+    config_t c;
+    char *a[] = {"myapp", "recv", "-s", "abc", "-d", "0.1", "r", "f"};
+    TEST_ASSERT_EQUAL_INT(1, parse_args(8, a, &c));
+}
+
+void test_unknown_option_rejected(void)
+{
+    config_t c;
+    char *a[] = {"myapp", "send", "-s", "abc", "-x", "r", "f"};
+    TEST_ASSERT_EQUAL_INT(1, parse_args(8, a, &c));
+}
+
+void test_parse_int_null_rejected(void)
+{
+    int v = 0;
+    TEST_ASSERT_EQUAL_INT(1, lab_test_parse_int(NULL, 1, 64, &v));
+}
+
+void test_parse_double_null_rejected(void)
+{
+    double v = 0.0;
+    TEST_ASSERT_EQUAL_INT(1, lab_test_parse_double(NULL, 0.0, 0.5, &v));
 }
 
 static uint8_t g_pkt[PKT_MAX_SIZE];
@@ -1101,6 +1165,15 @@ int main(void)
     RUN_TEST(test_session_too_long_rejected);
     RUN_TEST(test_session_bad_charset_rejected);
     RUN_TEST(test_missing_session_rejected);
+    RUN_TEST(test_window_flag_without_value_rejected);
+    RUN_TEST(test_loss_flag_without_value_rejected);
+    RUN_TEST(test_corrupt_nonnumeric_rejected);
+    RUN_TEST(test_timeout_nonnumeric_rejected);
+    RUN_TEST(test_corrupt_flag_on_recv_rejected);
+    RUN_TEST(test_dup_flag_on_recv_rejected);
+    RUN_TEST(test_unknown_option_rejected);
+    RUN_TEST(test_parse_int_null_rejected);
+    RUN_TEST(test_parse_double_null_rejected);
     RUN_TEST(test_checksum_rfc1071_example);
     RUN_TEST(test_checksum_odd_length);
     RUN_TEST(test_encode_hi_seq2_exact_wire_bytes);

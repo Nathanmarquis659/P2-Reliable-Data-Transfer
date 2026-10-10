@@ -41,6 +41,18 @@ static int parse_double(const char *s, double lo, double hi, double *out)
     return 0;
 }
 
+#ifdef TEST
+int lab_test_parse_int(const char *s, int lo, int hi, int *out)
+{
+    return parse_int(s, lo, hi, out);
+}
+
+int lab_test_parse_double(const char *s, double lo, double hi, double *out)
+{
+    return parse_double(s, lo, hi, out);
+}
+#endif
+
 static int valid_session(const char *s)
 {
     size_t len = strlen(s);
