@@ -886,6 +886,75 @@ void test_sx_stop_and_wait_w1(void)
     TEST_ASSERT_EQUAL_INT(SX_ST_DONE, sx_status(&st));
 }
 
+/* Clean-channel end-to-end: drives sx and rx against each other with zero loss.
+ * Returns the simulated time at which the sender finished (and the receiver
+ * reached DONE after its FIN linger), or -1 if it did not complete in time. */
+static long run_e2e(int window, const uint8_t *file, size_t len, uint8_t *out)
+{
+    static sx_state_t sxs;
+    static rx_state_t rxs;
+
+    sx_init(&sxs, window, 250, file, len);
+    rx_init(&rxs, 0);
+
+    size_t written = 0;
+    long t = 0;
+    for (int round = 0; round < 10000; round++) {
+        sx_send_t s;
+        while (sx_next_send(&sxs, t, &s) == 1) {
+            rx_action_t act = rx_on_packet(&rxs, t, s.buf, (size_t)s.len);
+            if (act == RX_ACT_WRITE_ACK) {
+                memcpy(out + written, rxs.payload, rxs.payload_len);
+                written += rxs.payload_len;
+            }
+        }
+
+        int n = make_ack(rxs.expected);
+        sx_on_packet(&sxs, t, g_pkt, (size_t)n);
+
+        if (sx_status(&sxs) == SX_ST_DONE) {
+            if (written != len)
+                return -1;
+            if (rx_tick(&rxs, t + RX_LINGER_MS) != RX_ACT_DONE)
+                return -1;
+            return t;
+        }
+
+        long rem = sx_timer_remaining_ms(&sxs, t);
+        t += (rem > 0 ? rem : 1);
+        sx_tick(&sxs, t);
+    }
+    return -1;
+}
+
+void test_e2e_clean_w1_2500_bytes(void)
+{
+    static uint8_t out[2500];
+    fill_pattern(g_file_3k, sizeof(g_file_3k));
+    long t = run_e2e(1, g_file_3k, 2500, out);
+    TEST_ASSERT_TRUE(t >= 0);
+    TEST_ASSERT_TRUE(t < 250); /* clean channel: no timeouts */
+    TEST_ASSERT_EQUAL_MEMORY(g_file_3k, out, 2500);
+}
+
+void test_e2e_clean_w16_20480_bytes(void)
+{
+    static uint8_t out[20480];
+    fill_pattern(g_file_10k, sizeof(g_file_10k));
+    long t = run_e2e(16, g_file_10k, sizeof(g_file_10k), out);
+    TEST_ASSERT_TRUE(t >= 0);
+    TEST_ASSERT_TRUE(t < 250); /* clean channel: no timeouts */
+    TEST_ASSERT_EQUAL_MEMORY(g_file_10k, out, sizeof(g_file_10k));
+}
+
+void test_e2e_clean_empty_file(void)
+{
+    static uint8_t out[1];
+    fill_pattern(g_file_2k, sizeof(g_file_2k));
+    long t = run_e2e(4, g_file_2k, 0, out);
+    TEST_ASSERT_EQUAL_INT64(0, (int64_t)t);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -944,6 +1013,10 @@ int main(void)
     RUN_TEST(test_sx_foreign_and_invalid_packets_ignored);
     RUN_TEST(test_sx_ack_above_n_data_clamped);
     RUN_TEST(test_sx_stop_and_wait_w1);
+
+    RUN_TEST(test_e2e_clean_w1_2500_bytes);
+    RUN_TEST(test_e2e_clean_w16_20480_bytes);
+    RUN_TEST(test_e2e_clean_empty_file);
 
     return UNITY_END();
 }
