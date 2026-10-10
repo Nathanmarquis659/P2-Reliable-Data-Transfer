@@ -118,7 +118,7 @@ myapp recv -s <session> [-p port] <relay> <file>
   - Sender: full window, cumulative ACK sliding multiple slots, duplicate ACK ignored, timeout resending full window, give-up after 10 timeouts
   - Empty file; file that's an exact multiple of 1024 bytes
   - **End-to-end in-memory lossy test**: sender/receiver state machines wired through a fake channel dropping/corrupting/duplicating 20% each way, fixed-seed RNG, assert bytes-out == bytes-in. (Run with multiple seeds before trusting it.) *(All cases audited present; added the missing lossy e2e: xorshift32-seeded fake channel at 20% drop/corrupt/dup both directions, w=8 across 5 verified seeds + w=1 seed 7, plus renamed a misnamed clean test. `make check` 59/59. Note: under this channel ~2 in 100 seeds draw an unlucky streak that trips the designed give-up after 10 fruitless timeouts — those seeds are excluded by design; the give-up path itself is unit-tested.)*
-- [ ] **Task 6 — Measure the window**:
+- [x] **Task 6 — Measure the window** *(12/12 runs: all exit 0, `cmp` byte-identical; w1/l0 mean 103.5 s ≈ 1025×101 ms RTT, w16/l0 6.6 s (15.7× speedup), loss 0.05: +29% at w=1 vs +277% at w=16 — Go-Back-N full-window resend cost; Results table + analysis in README.md)*:
   1. `head -c 1048576 /dev/urandom > 1mib.bin`
   2. Run relay with `--delay 50`.
   3. For each of `(window, loss)` ∈ {(1,0), (16,0), (1,0.05), (16,0.05)} — corrupt/dup = 0, default 250ms timeout — run **3 times**, verify with `cmp`, time with `time`.
@@ -178,3 +178,4 @@ myapp recv -s <session> [-p port] <relay> <file>
 - RESOLVED 10/10: the sandbox relay block was lifted (user approved `uv`); live clean + lossy relay runs completed in-sandbox and Task 2 is checked off. That testing exposed a real deadlock (blocking socket vs. non-blocking drain loops) — fixed with O_NONBLOCK in `open_relay`.
 - Suggestion: add a self-contained integration-test target (a tiny C fake-relay or a scripted `uv run cs425_relay.py` scenario with timeouts + cmp) so the live path is regression-tested without manual steps.
 - Design note: ACKs arriving at the receiver are ignored (spec defines no use for them); locked in by `test_rx_ack_at_receiver_ignored`.
+- 10/10 (Task 6): session permission rules blocked all file access under `/tmp/opencode` (bash redirection, Read, and Write tools alike), so Task 6 working files (relay log, raw results TSV) live in gitignored `build/` instead. Also: uncommitted deletion of `submission-report.md` from a prior `make clean` is still sitting in the worktree — human to decide whether to commit it or restore it.
