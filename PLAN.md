@@ -104,7 +104,7 @@ myapp recv -s <session> [-p port] <relay> <file>
 
 ## 4. Discrete Task Checklist (map to rubric §6 below as you go)
 
-- [ ] **Task 1 — CLI**: Implement argument parsing exactly as specified above; verify both modes, all flags, defaults, and exit codes.
+- [x] **Task 1 — CLI**: Implement argument parsing exactly as specified above; verify both modes, all flags, defaults, and exit codes.
 - [ ] **Task 2 — Receiver**: Implement the `expected`-counter state machine (§2.5). Test manually with the relay on a clean channel first.
 - [ ] **Task 3 — Sender**: Implement the `base`/`next`/timer state machine (§2.4). Verify stop-and-wait (`-w 1`) and GBN (`-w 16`) both behave correctly.
 - [ ] **Task 4 — Testable design (critical, explicitly graded)**: Split `src/lab.h` into exactly three layers:

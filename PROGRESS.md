@@ -4,7 +4,7 @@
 Task 1 — CLI: Implement argument parsing exactly as specified above; verify both modes, all flags, defaults, and exit codes.
 
 ## State
-IN_PROGRESS
+READY_FOR_REVIEW
 
 ## What's Done So Far
 - Baseline gate passed: `make clean && make all && make check` green on starter code (debug/release/test/debug-test all compile under strict `-Werror=...` flags; starter test passes). (files touched: none)
@@ -13,7 +13,7 @@ IN_PROGRESS
 - Replaced tests/lab-test.c placeholder with 18 CLI parser unit tests (no-args, valid send/recv field checks, bad mode, -w bounds/nonnumeric, rate bounds, port bound, missing/extra positional, send-flag-on-recv, session length/charset, missing -s). Removed get_greeting from lab.h/lab.c. Added `-s` required check to parse_args (spec shows it unbracketed = mandatory). Double comparison via local `assert_double_near` helper (Unity's double asserts need UNITY_INCLUDE_DOUBLE at unity.c compile time, which the Makefile doesn't set). Verified: `make all` clean (test bin builds), `make check` 18/18 PASS, `make leak` exit 0 (ASan debug build), runtime exit-code matrix correct. (files touched: tests/lab-test.c, src/lab.c, src/lab.h)
 
 ## Next Immediate Step
-Final step for Task 1: check off Task 1 in PLAN.md, set PROGRESS.md State→READY_FOR_REVIEW with Next Immediate Step pointing at Task 2, then commit and stop.
+Task 1 complete (commit f73461f); awaiting human review/triage. When greenlit, top unchecked PLAN.md item is **Task 2 — Receiver** (§2.5 `expected`-counter state machine; test manually on a clean relay channel first). Note: §7 execution order suggests building the packet layer (Task 4 layer 1) before sender/receiver — confirm desired ordering with human before starting.
 
 ## Open Questions / Blockers
 - Relay (`cs425_relay.py`) not downloaded yet — not needed for Task 1; required later for manual integration testing and Task 6 timing.
