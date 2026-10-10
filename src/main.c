@@ -8,14 +8,25 @@
 
 
 
-int main(void)
+int main(int argc, char **argv)
 {
-    char *greeting = get_greeting("World");
-    if (greeting) {
-        printf("%s\n", greeting);
-        free(greeting); // Free the allocated memory for the greeting
-    } else {
-        printf("Failed to create greeting.\n");
-    }
+    config_t cfg;
+    int code = parse_args(argc, argv, &cfg);
+    if (code != 0)
+        return code;
+    if (argc == 1)
+        return 0;
+
+    printf("mode=%s\n", cfg.mode == MODE_SEND ? "send" : "recv");
+    printf("session=%s\n", cfg.session);
+    printf("window=%d\n", cfg.window);
+    printf("timeout_ms=%d\n", cfg.timeout_ms);
+    printf("loss=%.6f\n", cfg.loss);
+    printf("corrupt=%.6f\n", cfg.corrupt);
+    printf("dup=%.6f\n", cfg.dup);
+    printf("port=%d\n", cfg.port);
+    printf("relay=%s\n", cfg.relay);
+    printf("file=%s\n", cfg.file);
+
     return 0;
 }
