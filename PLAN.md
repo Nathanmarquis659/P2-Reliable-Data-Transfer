@@ -105,12 +105,12 @@ myapp recv -s <session> [-p port] <relay> <file>
 ## 4. Discrete Task Checklist (map to rubric §6 below as you go)
 
 - [x] **Task 1 — CLI**: Implement argument parsing exactly as specified above; verify both modes, all flags, defaults, and exit codes.
-- [ ] **Task 2 — Receiver**: Implement the `expected`-counter state machine (§2.5). Test manually with the relay on a clean channel first.
+- [x] **Task 2 — Receiver**: Implement the `expected`-counter state machine (§2.5). Test manually with the relay on a clean channel first. *(live clean-channel run done in-sandbox via `uv run cs425_relay.py`, byte-identical; lossy 0.2/0.1/0.2 seed-7 also verified. Live testing exposed and fixed a blocking-socket deadlock in the I/O glue drain loops — O_NONBLOCK now set in `open_relay`.)*
 - [x] **Task 3 — Sender**: Implement the `base`/`next`/timer state machine (§2.4). Verify stop-and-wait (`-w 1`) and GBN (`-w 16`) both behave correctly. *(verified at unit level incl. in-memory e2e at w=1/w=16; live relay runs happen during Task 4 integration)*
 - [x] **Task 4 — Testable design (critical, explicitly graded)**: Split `src/lab.h` into exactly three layers:
   1. **Packets** — pure functions: encode/decode/validate/checksum. No I/O.
   2. **State machines** — sender & receiver structs + event-driven functions (`on_ack`, `on_data`, `on_timeout`, etc.) that take "now" as a parameter and return actions. **No** `sendto`/`recvfrom`/`poll`/`clock_gettime`/`fwrite` calls anywhere in this layer.
-  3. **I/O** — thin glue: real socket, real clock, real file, the `poll` loop, relay handshake. Only this layer touches the OS. *(I/O glue implemented in main.c; layers 1–2 confirmed I/O-free by grep; live-relay runs of the glue still pending — see PROGRESS.md Blockers)*
+  3. **I/O** — thin glue: real socket, real clock, real file, the `poll` loop, relay handshake. Only this layer touches the OS. *(I/O glue implemented in main.c; layers 1–2 confirmed I/O-free by grep; live-relay runs of the glue completed in-sandbox via uv on 10/10 — clean + lossy, byte-identical)*
 - [ ] **Task 5 — Unity tests** (`make check`), including minimum required cases:
   - RFC 1071 checksum example, odd-length packet, single-bit-flip detection
   - Too-short datagram, length/size mismatch, unknown `type`
@@ -175,5 +175,6 @@ myapp recv -s <session> [-p port] <relay> <file>
 
 ## Backlog (agent observations — human triages)
 
-- Task 2 manual clean-channel relay test still pending: I/O glue now exists (Task 4 done), but this sandbox's permission rules deny running `cs425_relay.py` in any form tried; exact commands for a normal shell are in PROGRESS.md under Blockers. Task 2 stays unchecked until that live test runs.
+- RESOLVED 10/10: the sandbox relay block was lifted (user approved `uv`); live clean + lossy relay runs completed in-sandbox and Task 2 is checked off. That testing exposed a real deadlock (blocking socket vs. non-blocking drain loops) — fixed with O_NONBLOCK in `open_relay`.
+- Suggestion: add a self-contained integration-test target (a tiny C fake-relay or a scripted `uv run cs425_relay.py` scenario with timeouts + cmp) so the live path is regression-tested without manual steps.
 - Design note: ACKs arriving at the receiver are ignored (spec defines no use for them); locked in by `test_rx_ack_at_receiver_ignored`.

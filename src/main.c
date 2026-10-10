@@ -4,6 +4,7 @@
 #include "sx.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <poll.h>
 #include <stdio.h>
@@ -55,6 +56,13 @@ static int open_relay(const char *host, int port, struct sockaddr_storage *addr_
     int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (fd < 0) {
         fprintf(stderr, "error: socket failed: %s\n", strerror(errno));
+        freeaddrinfo(res);
+        return -1;
+    }
+    int fl = fcntl(fd, F_GETFL, 0);
+    if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0) {
+        fprintf(stderr, "error: fcntl(O_NONBLOCK) failed: %s\n", strerror(errno));
+        close(fd);
         freeaddrinfo(res);
         return -1;
     }
