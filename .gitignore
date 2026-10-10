@@ -54,3 +54,8 @@ dkms.conf
 /myprogram
 /build
 /.vscode/c_cpp_properties.json
+
+# Generated test data (Task 2 live tests, Task 6 timing)
+/1mib.bin
+/in.bin
+/out.bin
